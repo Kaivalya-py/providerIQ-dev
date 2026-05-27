@@ -2,6 +2,12 @@
 // Express + tRPC headless service
 // Powered by Inquantic.Ai
 
+import { config } from 'dotenv';
+import { resolve } from 'node:path';
+
+// Load .env from monorepo root
+config({ path: resolve(import.meta.dirname, '../../../.env') });
+
 import express from 'express';
 import cors from 'cors';
 import { createExpressMiddleware } from '@trpc/server/adapters/express';

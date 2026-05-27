@@ -1,0 +1,1 @@
+export const DEFAULT_CONNECTOR_TIMEOUT_MS = 60_000;

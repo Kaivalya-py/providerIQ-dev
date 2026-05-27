@@ -4,8 +4,18 @@
 import { initTRPC, TRPCError } from '@trpc/server';
 import type { Context } from './context.js';
 import { z } from 'zod';
+import { randomUUID } from 'node:crypto';
 import { OrchestratorAgent } from '@provideriq/agents';
 import { LiveScraperConnector } from '@provideriq/connectors';
+import {
+  ApifyGoogleMapsReviewsConnector,
+  buildAcquisitionConfig,
+  classifyEvidence,
+  dedupeRawEvidence,
+  mapClassifiedEvidenceToSignals,
+  runRawQualityGate,
+} from '@provideriq/acquisition';
+import { ScoringEngine } from '@provideriq/scoring';
 
 const t = initTRPC.context<Context>().create();
 
@@ -68,12 +78,23 @@ export const appRouter = router({
       }
 
       const facilities = await ctx.db.facility.findMany({
-        where: whereClause,
+        where: {
+          ...whereClause,
+          reviews: { some: {} },
+        },
         orderBy: { piiScore: 'desc' },
         take: 100,
+        include: {
+          _count: { select: { reviews: true } },
+        },
       });
 
-      return { facilities };
+      // Only return facilities with meaningful review data (>1 = real scraped data)
+      const withReviews = facilities
+        .filter(f => f._count.reviews > 1)
+        .map(({ _count, ...rest }) => ({ ...rest, reviewCount: _count.reviews }));
+
+      return { facilities: withReviews };
     }),
 
   // Detailed profile retrieval
@@ -85,8 +106,9 @@ export const appRouter = router({
         include: {
           scoreHistory: { orderBy: { recordedAt: 'desc' }, take: 10 },
           signals: { orderBy: { capturedAt: 'desc' }, take: 20 },
-          reviews: { orderBy: { reviewDate: 'desc' }, take: 5 },
+          reviews: { orderBy: { reviewDate: 'desc' }, take: 50 },
           newsItems: { orderBy: { publishedAt: 'desc' }, take: 5 },
+          _count: { select: { reviews: true } },
         },
       });
 
@@ -97,7 +119,7 @@ export const appRouter = router({
         });
       }
 
-      return { facility };
+      return { facility: { ...facility, reviewCount: facility._count.reviews } };
     }),
 
   // Secure intelligence calculation trigger
@@ -155,6 +177,195 @@ export const appRouter = router({
       });
       return { reviews };
     }),
-});
 
+  // === Acquisition MVP Pipeline ===
+  // Accepts hospital name + city (+ optional Google Maps URL), runs full evidence pipeline
+  runAcquisition: publicProcedure
+    .input(
+      z.object({
+        hospitalName: z.string().min(2),
+        city: z.string().min(2),
+        state: z.string().optional(),
+        googleMapsUrl: z.string().url().optional(),
+        maxReviews: z.number().int().min(1).max(500).default(100),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const runId = randomUUID();
+      const facilityId = randomUUID();
+      const hospitalSeedId = randomUUID();
+      const pipelineStart = Date.now();
+
+      // Step tracking helper
+      type PipelineStep = { name: string; description: string; durationMs: number; inputCount: number; outputCount: number; detail: Record<string, unknown> };
+      const steps: PipelineStep[] = [];
+      const step = (name: string, description: string, fn: () => any) => {
+        const t0 = Date.now();
+        const result = fn();
+        return result;
+      };
+
+      const config = buildAcquisitionConfig();
+      const connector = new ApifyGoogleMapsReviewsConnector(config);
+
+      // Step 1: Resolve & Fetch Reviews
+      const t1 = Date.now();
+      const apifyResult = await connector.fetchReviews({
+        runId,
+        hospitalSeedId,
+        hospitalName: input.hospitalName,
+        city: input.city,
+        googleMapsUrl: input.googleMapsUrl,
+        maxReviews: input.maxReviews,
+      });
+      steps.push({
+        name: 'Fetch Reviews',
+        description: input.googleMapsUrl
+          ? `Direct URL fetch from Google Maps`
+          : `Name-based discovery: "${input.hospitalName} ${input.city}" → Apify actor`,
+        durationMs: Date.now() - t1,
+        inputCount: 1,
+        outputCount: apifyResult.records.length,
+        detail: {
+          mode: input.googleMapsUrl ? 'url' : 'search',
+          query: input.googleMapsUrl ?? `${input.hospitalName} ${input.city}`,
+          actorId: 'compass/google-maps-reviews-scraper',
+          maxReviews: input.maxReviews,
+        },
+      });
+
+      // Step 2: Deduplication
+      const t2 = Date.now();
+      const dedupe = dedupeRawEvidence(apifyResult.records);
+      steps.push({
+        name: 'Deduplication',
+        description: `Content-hash dedup to remove identical/near-duplicate reviews`,
+        durationMs: Date.now() - t2,
+        inputCount: apifyResult.records.length,
+        outputCount: dedupe.unique.length,
+        detail: { duplicatesRemoved: dedupe.duplicates.length, algorithm: 'content-hash' },
+      });
+
+      // Step 3: Quality Gate
+      const t3 = Date.now();
+      const quality = runRawQualityGate(dedupe.unique);
+      steps.push({
+        name: 'Quality Gate',
+        description: `Filter spam, empty, and low-confidence reviews`,
+        durationMs: Date.now() - t3,
+        inputCount: dedupe.unique.length,
+        outputCount: quality.accepted.length,
+        detail: {
+          accepted: quality.accepted.length,
+          rejected: quality.rejected.length,
+          rejectionReasons: quality.rejected.slice(0, 5).map((r: any) => r.reason ?? 'unspecified'),
+        },
+      });
+
+      if (quality.accepted.length === 0) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: `No evidence passed quality gate. collected=${apifyResult.records.length}, rejected=${quality.rejected.length}`,
+        });
+      }
+
+      // Step 4: Classification
+      const t4 = Date.now();
+      const classifiedEvidence = classifyEvidence(quality.accepted);
+      const aspectCounts: Record<string, number> = {};
+      for (const c of classifiedEvidence) {
+        for (const cl of c.classifications ?? []) {
+          aspectCounts[cl.aspect] = (aspectCounts[cl.aspect] ?? 0) + 1;
+        }
+      }
+      steps.push({
+        name: 'Classification',
+        description: `Aspect-based sentiment analysis on each accepted review`,
+        durationMs: Date.now() - t4,
+        inputCount: quality.accepted.length,
+        outputCount: classifiedEvidence.length,
+        detail: { aspectDistribution: aspectCounts },
+      });
+
+      // Step 5: Signal Extraction
+      const t5 = Date.now();
+      const evidenceById = new Map(quality.accepted.map((r) => [r.id, r]));
+      const signals = mapClassifiedEvidenceToSignals({
+        facilityId,
+        classifiedEvidence,
+        evidenceById,
+      });
+      steps.push({
+        name: 'Signal Extraction',
+        description: `Map classified evidence to scorable signals per dimension`,
+        durationMs: Date.now() - t5,
+        inputCount: classifiedEvidence.length,
+        outputCount: signals.length,
+        detail: {
+          signalTypes: [...new Set(signals.map((s) => s.dimension ?? 'unknown'))],
+        },
+      });
+
+      // Step 6: Scoring
+      const t6 = Date.now();
+      const scoringEngine = new ScoringEngine();
+      const score = scoringEngine.compute({
+        facilityId,
+        facility: {
+          id: facilityId,
+          name: input.hospitalName,
+          city: input.city,
+          state: input.state ?? 'UNKNOWN',
+          tier: 'TIER_2',
+          facilityType: 'HOSPITAL',
+          specialties: [],
+        },
+        signals,
+      });
+      steps.push({
+        name: 'PII Scoring',
+        description: `Compute Provider Intelligence Index from weighted signal aggregation`,
+        durationMs: Date.now() - t6,
+        inputCount: signals.length,
+        outputCount: 1,
+        detail: {
+          piiScore: score.piiScore,
+          confidence: score.confidence,
+          dimensionCount: Object.keys(score.dimensions).length,
+        },
+      });
+
+      // Sample reviews for UI display
+      const sampleReviews = quality.accepted.slice(0, 10).map((r) => ({
+        text: r.text?.slice(0, 300) ?? '',
+        rating: r.rating,
+        publishedAt: r.publishedAt,
+        sentiment: classifiedEvidence.find((c) => c.id === r.id)?.classifications?.[0]?.sentiment ?? 'neutral',
+        aspects: classifiedEvidence.find((c) => c.id === r.id)?.classifications?.map((c) => c.aspect) ?? [],
+      }));
+
+      return {
+        runId,
+        hospitalName: input.hospitalName,
+        city: input.city,
+        collected: apifyResult.records.length,
+        accepted: quality.accepted.length,
+        rejected: quality.rejected.length,
+        duplicatesRemoved: dedupe.duplicates.length,
+        signalCount: signals.length,
+        score: score.piiScore,
+        dimensions: score.dimensions,
+        positiveFactors: score.positiveFactors,
+        negativeFactors: score.negativeFactors,
+        confidence: score.confidence,
+        narrative: score.narrative,
+        sampleReviews,
+        // Pipeline provenance — every layer the data flows through
+        provenance: {
+          totalDurationMs: Date.now() - pipelineStart,
+          steps,
+        },
+      };
+    }),
+});
 export type AppRouter = typeof appRouter;

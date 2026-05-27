@@ -1,0 +1,9 @@
+{
+	"id": "318bzkBtp2AmLBn",
+	"json": "{\"id\":\"318bzkBtp2AmLBn\",\"url\":\"https://www.practo.com/bangalore/hospital/manipal-hospital-whitefield/reviews\",\"loadedUrl\":\"https://www.practo.com/bangalore/hospital/manipal-hospital-whitefield/reviews\",\"uniqueKey\":\"https://www.practo.com/bangalore/hospital/manipal-hospital-whitefield/reviews\",\"method\":\"GET\",\"noRetry\":false,\"retryCount\":0,\"errorMessages\":[],\"headers\":{},\"userData\":{\"__crawlee\":{\"state\":4}},\"handledAt\":\"2026-05-26T11:20:07.190Z\"}",
+	"method": "GET",
+	"orderNo": null,
+	"retryCount": 0,
+	"uniqueKey": "https://www.practo.com/bangalore/hospital/manipal-hospital-whitefield/reviews",
+	"url": "https://www.practo.com/bangalore/hospital/manipal-hospital-whitefield/reviews"
+}

@@ -1,0 +1,80 @@
+{
+  "usableSessionsCount": 2,
+  "retiredSessionsCount": 0,
+  "sessions": [
+    {
+      "id": "session_qeulmKAfji",
+      "cookieJar": {
+        "version": "tough-cookie@6.0.1",
+        "storeType": "MemoryCookieStore",
+        "rejectPublicSuffixes": true,
+        "enableLooseMode": false,
+        "allowSpecialUseDomain": true,
+        "prefixSecurity": "silent",
+        "cookies": []
+      },
+      "userData": {},
+      "maxErrorScore": 3,
+      "errorScoreDecrement": 0.5,
+      "expiresAt": "2026-05-26T12:08:47.528Z",
+      "createdAt": "2026-05-26T11:18:47.528Z",
+      "usageCount": 0,
+      "maxUsageCount": 50,
+      "errorScore": 0
+    },
+    {
+      "id": "session_o40eBVf3Bd",
+      "cookieJar": {
+        "version": "tough-cookie@6.0.1",
+        "storeType": "MemoryCookieStore",
+        "rejectPublicSuffixes": true,
+        "enableLooseMode": false,
+        "allowSpecialUseDomain": true,
+        "prefixSecurity": "silent",
+        "cookies": [
+          {
+            "key": "AKA_A2",
+            "value": "A",
+            "expires": "2026-05-26T12:18:53.849Z",
+            "domain": "practo.com",
+            "path": "/",
+            "secure": true,
+            "httpOnly": true,
+            "hostOnly": false,
+            "creation": "2026-05-26T11:18:54.456Z",
+            "lastAccessed": "2026-05-26T11:18:54.456Z"
+          },
+          {
+            "key": "sec_cpt",
+            "value": "F8EDDE530127DC0F2D58B68C4A7838E3~1~YAAQlzTZF8LBZl2eAQAAb1ICZA82TCaZt7ngU56X4Oy6kbbMpyWS7EFor1jby729oD1lP3zdHhwMsUa8un8tAogY4qZIaz3R8r6saORDGKiuI6vpxO0nnPntPPle6J+NqTQxV6oDHr1nc9638Xv4MEU3fCo+UXrH1TSFHYU9VRBmPJ64SwOhh1XalpZ3A3fLCRc2lAC9EK0Y/Z8fIbrCHOex1ouwA1l1ZNGnxU1Dflzg9K4FCeIV/gm4LbDf/yf3G44EXjXYr8gDBSbpSYsds7efm6LG6xh9DYTVqN3jd6/kmpE4KuWRWKhohYEvos51XO8TKB+XWjB2vn1tsy1oqJIr83rvFw7SbqZX54c+0Qmng/JsDPOMeXwmkxVQraoasnEoy8wVfUCBxhoCINHtys5Py4LpF4MrQ78DInQ8UMIlJFWoUUUaiwhFu0jMWQP0Q+byYRwfpZfz7aAFN/S8nW6AXvegn8e8cbyEJKbuCWJD0vtU6thlaBuqia6/RWyV4h6hd3NIr5T5Sktyiklgy4sOBG8Ugdqu6Br3iYLnoIO41OEMuZHwlvnEyX2pUaRiWaagK+xnahgQ//1Ej3sfL57OF0mpGZd/xUMtD0HhgVvcq+TGG4JC37ICglojDESSFQeNAlAg+ST/bFOOzUIpqRFADJ+yFs4+VlXdQwb0ybeVk8jhX0IQ+itM4LsL4CnzuQVg1V8NNv25/cTr0gifRYBlxQO6VnnOvgYkBmMiqdkz8nbT9ZzXCSPzOP9ZKw==",
+            "expires": "2026-05-26T13:18:53.851Z",
+            "domain": "practo.com",
+            "path": "/",
+            "hostOnly": false,
+            "creation": "2026-05-26T11:18:54.501Z",
+            "lastAccessed": "2026-05-26T11:18:54.501Z"
+          },
+          {
+            "key": "ak_bmsc",
+            "value": "2874A026F4FFBACC46BF8B630EF97717~000000000000000000000000000000~YAAQlzTZF8jBZl2eAQAAH1MCZB+w6FNvDCwUk3Hv2hjn4ZJFPLFFGVZzwk6CP8Eg7EFFads01oJ/iVoZKF6a37rT57lE1/HLllvMmxYsfEO5/yXlNUqmvS8W9IpngpOY1YEbs2yiYq8XwnB5/giZ6LZi7hhKXRxE8K4ctxmc3ha/XDs9LuxNUpCZ2GEzs04EcPnQc+GC5tru5vdMkVukdiH7WBss8fmXrkE3te7tNAqs8umWqaLouYhTHPvOSj+u6kF45EsTPsnobueusJb5fHq7E9SLI5fk6OQAtALFVeUjiTljbwyevG5kHNqLAjhPzBR0zn+CjVNCg/tcYsGoVJqGlv8LCbRBz4k8cUyq5o25v3BYjdXWRumTE1/7XsMwTiV7BU7mAYJx",
+            "expires": "2026-05-26T13:18:54.016Z",
+            "domain": "practo.com",
+            "path": "/",
+            "httpOnly": true,
+            "hostOnly": false,
+            "creation": "2026-05-26T11:18:54.542Z",
+            "lastAccessed": "2026-05-26T11:18:54.542Z"
+          }
+        ]
+      },
+      "userData": {},
+      "maxErrorScore": 3,
+      "errorScoreDecrement": 0.5,
+      "expiresAt": "2026-05-26T12:08:47.734Z",
+      "createdAt": "2026-05-26T11:18:47.734Z",
+      "usageCount": 1,
+      "maxUsageCount": 50,
+      "errorScore": 0
+    }
+  ]
+}
