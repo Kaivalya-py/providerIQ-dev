@@ -5,7 +5,13 @@ import { initTRPC, TRPCError } from '@trpc/server';
 import type { Context } from './context.js';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
-import { OrchestratorAgent } from '@provideriq/agents';
+import {
+  OrchestratorAgent,
+  SentimentAgent,
+  BillingAgent,
+  type SentimentAgentInput,
+  type BillingAgentInput,
+} from '@provideriq/agents';
 import { LiveScraperConnector } from '@provideriq/connectors';
 import {
   ApifyGoogleMapsReviewsConnector,
@@ -49,6 +55,55 @@ const apiKeySecuredProcedure = t.procedure.use(async ({ ctx, next }) => {
     },
   });
 });
+
+// Rank reviews by how strongly they "resonate" — longer, rating-extreme, more
+// recent reviews carry more representative signal. Returns up to `limit` real
+// patient comments for display in the live agent terminal.
+type ResonanceRow = { text: string | null; rating: number | null; reviewDate: Date | null; source: string };
+function pickResonatingComments(reviews: ResonanceRow[], limit = 10, bias?: (text: string) => number) {
+  return reviews
+    .filter((r) => (r.text ?? '').trim().length > 0)
+    .map((r) => {
+      const text = r.text ?? '';
+      const len = Math.min(text.length, 400) / 400; // 0..1
+      const extremity = r.rating != null ? Math.abs(r.rating - 3) / 2 : 0.4; // 0..1
+      const recency = r.reviewDate ? 1 : 0.5;
+      const extra = bias ? bias(text) : 0;
+      return { r, resonance: len * 0.4 + extremity * 0.4 + recency * 0.2 + extra };
+    })
+    .sort((a, b) => b.resonance - a.resonance)
+    .slice(0, limit)
+    .map(({ r }) => ({
+      text: (r.text ?? '').slice(0, 400),
+      rating: r.rating,
+      source: r.source,
+      publishedAt: r.reviewDate,
+      sentiment:
+        r.rating == null ? 'neutral' : r.rating >= 4 ? 'positive' : r.rating <= 2 ? 'negative' : 'neutral',
+    }));
+}
+
+/**
+ * Keep a live-agent headline metric in sync with the dashboard's objective
+ * review data. The LLM reads a text-only, recency-skewed sample and can drift
+ * far from the facility's true rating distribution, so we blend its qualitative
+ * read 50/50 with the objective anchor and clamp it to a ±band window. This
+ * guarantees the terminal numbers never land "drastically different" from the
+ * Provider Intelligence page while still letting the model nuance the result.
+ */
+function calibrateToAnchor(
+  llmValue: number | null | undefined,
+  anchor: number | null | undefined,
+  band = 15
+): number | null {
+  const a = typeof anchor === 'number' && Number.isFinite(anchor) ? anchor : null;
+  const v = typeof llmValue === 'number' && Number.isFinite(llmValue) ? llmValue : null;
+  if (a == null) return v == null ? null : Math.round(v);
+  if (v == null) return Math.round(a);
+  const blended = 0.5 * v + 0.5 * a;
+  const clamped = Math.max(a - band, Math.min(a + band, blended));
+  return Math.round(Math.max(0, Math.min(100, clamped)));
+}
 
 export const appRouter = router({
   // Factual search procedure
@@ -260,6 +315,208 @@ export const appRouter = router({
         include: { facility: { select: { name: true, city: true } } }
       });
       return { reviews };
+    }),
+
+  // List hospitals with enough review data to analyse (agent terminal selector)
+  listAnalyzableHospitals: publicProcedure.query(async ({ ctx }) => {
+    const facilities = await ctx.db.facility.findMany({
+      where: { reviews: { some: {} } },
+      select: {
+        id: true,
+        name: true,
+        city: true,
+        state: true,
+        _count: { select: { reviews: true } },
+      },
+      take: 300,
+    });
+    const hospitals = facilities
+      .map((f) => ({ id: f.id, name: f.name, city: f.city, state: f.state, reviewCount: f._count.reviews }))
+      .filter((f) => f.reviewCount > 1)
+      .sort((a, b) => b.reviewCount - a.reviewCount);
+    return { hospitals };
+  }),
+
+  // Run the Sentiment Agent live against a hospital's real reviews
+  runSentimentAnalysis: publicProcedure
+    .input(z.object({ facilityId: z.string() }))
+    .mutation(async ({ input, ctx }) => {
+      const facility = await ctx.db.facility.findUnique({ where: { id: input.facilityId } });
+      if (!facility) throw new TRPCError({ code: 'NOT_FOUND', message: 'Facility not found.' });
+
+      const reviewRows = await ctx.db.review.findMany({
+        where: { facilityId: input.facilityId, text: { not: null } },
+        orderBy: { reviewDate: 'desc' },
+        take: 150,
+        select: { text: true, rating: true, reviewDate: true, source: true },
+      });
+      if (reviewRows.length === 0) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'No reviews available for this hospital.' });
+      }
+
+      // Objective anchors over ALL reviews — the same basis the Provider
+      // Intelligence dashboard scores against — so the live read stays in sync.
+      const ratingStats = await ctx.db.review.aggregate({
+        where: { facilityId: input.facilityId },
+        _avg: { rating: true },
+        _count: { rating: true },
+      });
+      const positiveAll = await ctx.db.review.count({
+        where: { facilityId: input.facilityId, rating: { gte: 4 } },
+      });
+      const totalRated = ratingStats._count.rating ?? 0;
+      const avgRating = ratingStats._avg.rating ?? null;
+      const ratingBaseline = avgRating != null ? Math.round((avgRating / 5) * 100) : null;
+      const objPositivity = totalRated > 0 ? Math.round((positiveAll / totalRated) * 100) : null;
+
+      const agentInput: SentimentAgentInput = {
+        facilityId: facility.id,
+        facilityName: facility.name,
+        city: facility.city,
+        state: facility.state,
+        runId: `sentiment_${Date.now()}`,
+        reviews: reviewRows.map((r) => ({
+          text: r.text ?? '',
+          rating: r.rating ?? null,
+          publishedAt: r.reviewDate ?? null,
+          source: r.source,
+        })),
+      };
+
+      const t0 = Date.now();
+      const out = await new SentimentAgent().execute(agentInput);
+      const raw = (out.rawData ?? {}) as Record<string, any>;
+
+      return {
+        agent: 'SentimentAgent',
+        facilityName: facility.name,
+        city: facility.city,
+        state: facility.state,
+        status: out.status,
+        error: out.error ?? null,
+        executionMs: Date.now() - t0,
+        reviewsAnalysed: reviewRows.length,
+        findings: {
+          positivityIndex: calibrateToAnchor(raw['positivityIndex'], objPositivity),
+          patientExperienceScore: calibrateToAnchor(raw['patientExperienceScore'], ratingBaseline),
+          clinicalQualityScore: calibrateToAnchor(
+            raw['clinicalQualityScore'],
+            facility.clinicalQualityScore ?? ratingBaseline
+          ),
+          spamMetrics: raw['spamMetrics'] ?? null,
+          aspectBreakdown: raw['aspectBreakdown'] ?? null,
+        },
+        // What the main Provider Intelligence page shows for this facility.
+        reference: {
+          piiScore: facility.piiScore ?? null,
+          patientExperienceScore: facility.patientExperienceScore ?? null,
+          clinicalQualityScore: facility.clinicalQualityScore ?? null,
+          avgRating,
+          positivityIndex: objPositivity,
+          totalReviews: totalRated,
+        },
+        signals: out.signals.map((s) => ({
+          category: s.category,
+          dimension: s.dimension,
+          score: Math.round((s.value ?? 0) * 100),
+          confidence: s.confidence ?? null,
+        })),
+        topComments: pickResonatingComments(reviewRows, 10),
+      };
+    }),
+
+  // Run the Billing Analyst Agent live against a hospital's real reviews
+  runBillingAnalysis: publicProcedure
+    .input(z.object({ facilityId: z.string() }))
+    .mutation(async ({ input, ctx }) => {
+      const facility = await ctx.db.facility.findUnique({ where: { id: input.facilityId } });
+      if (!facility) throw new TRPCError({ code: 'NOT_FOUND', message: 'Facility not found.' });
+
+      const reviewRows = await ctx.db.review.findMany({
+        where: { facilityId: input.facilityId, text: { not: null } },
+        orderBy: { reviewDate: 'desc' },
+        take: 150,
+        select: { text: true, rating: true, reviewDate: true, source: true },
+      });
+      if (reviewRows.length === 0) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'No reviews available for this hospital.' });
+      }
+
+      const agentInput: BillingAgentInput = {
+        facilityId: facility.id,
+        facilityName: facility.name,
+        city: facility.city,
+        state: facility.state,
+        runId: `billing_${Date.now()}`,
+        reviews: reviewRows.map((r) => ({
+          text: r.text ?? '',
+          rating: r.rating ?? null,
+          publishedAt: r.reviewDate ?? null,
+          source: r.source,
+        })),
+        facilityContext: {
+          nabhGrade: facility.nabhGrade,
+          tier: facility.tier,
+          gicEmpanelled: facility.gicEmpanelled,
+          cghsEmpanelled: facility.cghsEmpanelled,
+          bedCount: facility.bedCount,
+        },
+      };
+
+      const t0 = Date.now();
+      const out = await new BillingAgent().execute(agentInput);
+      const raw = (out.rawData ?? {}) as Record<string, any>;
+
+      // Surface the comments that actually concern money in the terminal.
+      const MONEY = /(bill|charge|cost|price|expensive|deposit|payment|insur|cashless|refund|money|fee|estimat|overcharg|package|claim)/i;
+      const billingBias = (text: string) => (MONEY.test(text) ? 0.5 : 0);
+
+      // Anchor to the dashboard's stored billing/fraud dimensions so the live
+      // read stays consistent with the Provider Intelligence page.
+      const transparency = calibrateToAnchor(
+        raw['billingTransparencyScore'],
+        facility.billingStabilityScore ?? null,
+        18
+      );
+      const fraudRisk = calibrateToAnchor(
+        raw['fraudRiskScore'],
+        facility.fraudRiskScore ?? null,
+        20
+      );
+
+      return {
+        agent: 'BillingAgent',
+        facilityName: facility.name,
+        city: facility.city,
+        state: facility.state,
+        status: out.status,
+        error: out.error ?? null,
+        executionMs: Date.now() - t0,
+        reviewsAnalysed: reviewRows.length,
+        findings: {
+          billingTransparencyScore: transparency,
+          fraudRiskScore: fraudRisk,
+          billingReviewCount: raw['billingReviewCount'] ?? null,
+          complaintBreakdown: raw['complaintBreakdown'] ?? null,
+          fraudPatterns: raw['fraudPatterns'] ?? [],
+          trendDirection: raw['trendDirection'] ?? null,
+          narrative: raw['narrative'] ?? null,
+          topBillingMentions: raw['topBillingMentions'] ?? [],
+        },
+        // What the main Provider Intelligence page shows for this facility.
+        reference: {
+          piiScore: facility.piiScore ?? null,
+          billingStabilityScore: facility.billingStabilityScore ?? null,
+          fraudRiskScore: facility.fraudRiskScore ?? null,
+        },
+        signals: out.signals.map((s) => ({
+          category: s.category,
+          dimension: s.dimension,
+          score: Math.round((s.value ?? 0) * 100),
+          confidence: s.confidence ?? null,
+        })),
+        topComments: pickResonatingComments(reviewRows, 10, billingBias),
+      };
     }),
 
   // === Acquisition MVP Pipeline ===

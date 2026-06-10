@@ -124,9 +124,35 @@ function SpiderChart({ selected, avg }: { selected: Facility; avg: Record<string
     series1.data.setAll(chartData);
     series2.data.setAll(chartData);
 
-    series1.appear(800);
-    series2.appear(800);
-    chart.appear(800, 100);
+    chart.appear(600, 0);
+
+    // Grow-from-center: animate each dataItem's working value from 0 → real value.
+    // Tuned to land around the ~1s mark so it syncs with the heatmap flicker settling.
+    const spiderTimers: number[] = [];
+    series1.events.once('datavalidated', () => {
+      series1.dataItems.forEach((di, i) => {
+        di.animate({
+          key: 'valueYWorking' as any,
+          from: 0,
+          to: di.get('valueY') ?? 0,
+          duration: 850,
+          delay: 60 + i * 35,
+          easing: am5.ease.out(am5.ease.cubic),
+        });
+      });
+    });
+    series2.events.once('datavalidated', () => {
+      series2.dataItems.forEach((di, i) => {
+        di.animate({
+          key: 'valueYWorking' as any,
+          from: 0,
+          to: di.get('valueY') ?? 0,
+          duration: 850,
+          delay: 180 + i * 35,
+          easing: am5.ease.out(am5.ease.cubic),
+        });
+      });
+    });
 
     const legend = chart.children.push(
       am5.Legend.new(root, {
@@ -138,7 +164,10 @@ function SpiderChart({ selected, avg }: { selected: Facility; avg: Record<string
     legend.markers.template.setAll({ width: 10, height: 10 });
     legend.data.setAll(chart.series.values);
 
-    return () => { root.dispose(); };
+    return () => {
+      spiderTimers.forEach(window.clearTimeout);
+      root.dispose();
+    };
   }, [selected.id]);
 
   return <div ref={divRef} style={{ width: '100%', height: '100%' }} />;
@@ -166,7 +195,7 @@ function DivergentChart({ selected, avg, positivityIndex }: { selected: Facility
         wheelY: 'none',
         layout: root.verticalLayout,
         paddingLeft: 0,
-        paddingRight: 32,
+        paddingRight: 56,
         paddingTop: 8,
         paddingBottom: 8,
       })
@@ -221,6 +250,8 @@ function DivergentChart({ selected, avg, positivityIndex }: { selected: Facility
         openValueXField: 'baseline',
         valueXField: 'score',
         categoryYField: 'dimension',
+        maskBullets: false,
+        clustered: false,
         tooltip: am5.Tooltip.new(root, {
           labelText: '[bold]{label}[/]\nScore: [bold]{score}[/]/100\nBenchmark: {cohort}/100\n{verdict}',
         }),
@@ -307,12 +338,60 @@ function DivergentChart({ selected, avg, positivityIndex }: { selected: Facility
         : 'Significantly below — investigate',
     });
 
+    // Random-direction wobble: each bar starts at the baseline, then snaps to 3 random
+    // points on either side of its target (diminishing amplitude), then settles on the true
+    // score. Feels like a needle searching for the right value. Synced to land around the
+    // same ~1s mark as the heatmap flicker.
     yAxis.data.setAll(chartData);
     series.data.setAll(chartData);
-    series.appear(800);
-    chart.appear(800, 100);
 
-    return () => { root.dispose(); };
+    chart.appear(600, 0);
+
+    const divergentTimers: number[] = [];
+    series.events.once('datavalidated', () => {
+      series.dataItems.forEach((di, i) => {
+        const target = di.get('valueX') ?? DIVERGENT_BASELINE;
+        // Seed the displayed value at the baseline (bar has zero width on first paint)
+        di.set('valueXWorking' as any, DIVERGENT_BASELINE);
+
+        const startDelay = 80 + i * 55;
+        // Diminishing wobble amplitudes — each in a random direction
+        const amplitudes = [22, 12, 6];
+        const stepDur = 130;
+        let cursor = startDelay;
+
+        amplitudes.forEach((amp) => {
+          const dir = Math.random() < 0.5 ? -1 : 1;
+          const wobbleVal = Math.max(2, Math.min(98, target + dir * amp));
+          const t = window.setTimeout(() => {
+            di.animate({
+              key: 'valueXWorking' as any,
+              to: wobbleVal,
+              duration: stepDur,
+              easing: am5.ease.inOut(am5.ease.quad),
+            });
+          }, cursor);
+          divergentTimers.push(t);
+          cursor += stepDur;
+        });
+
+        // Final settle on true score
+        const tSettle = window.setTimeout(() => {
+          di.animate({
+            key: 'valueXWorking' as any,
+            to: target,
+            duration: 320,
+            easing: am5.ease.out(am5.ease.cubic),
+          });
+        }, cursor);
+        divergentTimers.push(tSettle);
+      });
+    });
+
+    return () => {
+      divergentTimers.forEach(window.clearTimeout);
+      root.dispose();
+    };
   }, [selected.id, positivityIndex]);
 
   return <div ref={divRef} style={{ width: '100%', height: '100%' }} />;
@@ -385,20 +464,22 @@ function TimelineHeatmap({ timeline, loading }: { timeline: TimelineDim[]; loadi
       height: am5.percent(95),
       strokeOpacity: 0,
       cornerRadiusTL: 2, cornerRadiusTR: 2, cornerRadiusBL: 2, cornerRadiusBR: 2,
+      // Default fill = coolest end of the palette. Each cell starts here, then is explicitly
+      // animated to its true color via the flicker sequence below. NOTE: do NOT attach a fill
+      // adapter — it would override every animation frame and the cycle would never be visible.
+      fill: am5.color('#2B7A4C'),
     });
 
-    series.columns.template.adapters.add('fill', (_fill, target) => {
-      const di = target.dataItem;
-      const val = di?.dataContext as any;
-      if (!val || val.value === null || val.value === undefined) return am5.color('#F2F1ED');
-      const v = val.value as number; // 0-5
+    // Final "settled" color for a 0–5 rating.
+    const heatColor = (v: number | null | undefined): am5.Color => {
+      if (v === null || v === undefined) return am5.color('#F2F1ED');
       if (v >= 4.3) return am5.color('#2B7A4C');
       if (v >= 3.8) return am5.color('#6EAD79');
       if (v >= 3.3) return am5.color('#C9D26B');
       if (v >= 2.8) return am5.color('#E8A93E');
       if (v >= 2.0) return am5.color('#E87A3B');
       return am5.color('#C2410C');
-    });
+    };
 
     // Convert YYYY-MM to short labels
     const monthLabel = (m: string) => {
@@ -430,6 +511,89 @@ function TimelineHeatmap({ timeline, loading }: { timeline: TimelineDim[]; loadi
     xAxis.data.setAll(xData);
     series.data.setAll(heatData);
 
+    // Cycle-through-heat animation. We defer with rAF so the columns actually exist in the
+    // canvas before we try to seed/animate their fills. Each tile starts cool, then flickers
+    // through a RANDOMIZED sequence of palette colors (cool → hot, with jitter) — as if each
+    // cell is "trying out" different scores — before settling on its real color.
+    const heatPalette = [
+      am5.color('#2B7A4C'), // dark green   (idx 0 — coolest)
+      am5.color('#6EAD79'), // light green
+      am5.color('#C9D26B'), // lime
+      am5.color('#E8A93E'), // amber
+      am5.color('#D97706'), // orange
+      am5.color('#E87A3B'), // light red
+      am5.color('#C2410C'), // dark red    (hottest)
+    ];
+    const cellTimers: number[] = [];
+    let rafId = 0;
+    rafId = requestAnimationFrame(() => {
+      rafId = requestAnimationFrame(() => {
+        series.columns.each((col) => {
+          const di = col.dataItem;
+          const ctx = di?.dataContext as any;
+          if (!ctx) return;
+
+          const isEmpty = ctx.value === null || ctx.value === undefined;
+          const target = heatColor(ctx.value);
+
+          // Empty cells: fade in to neutral, no flicker.
+          if (isEmpty) {
+            col.set('fill', am5.color('#F2F1ED'));
+            col.set('fillOpacity', 0);
+            const tEmpty = window.setTimeout(() => {
+              col.animate({ key: 'fillOpacity', to: 1, duration: 600, easing: am5.ease.out(am5.ease.cubic) });
+            }, Math.random() * 400);
+            cellTimers.push(tEmpty);
+            return;
+          }
+
+          // Seed at the coolest end so every tile starts "cool".
+          col.set('fill', heatPalette[0]);
+          col.set('fillOpacity', 1);
+
+          // Randomize the flicker sequence per tile, tuned to fit roughly a 1s budget:
+          //  - random start delay (0–180 ms) staggers tiles chaotically
+          //  - 5–7 random palette stops, biased to walk cool → hot over time
+          //  - each stop lasts 70–110 ms
+          const startDelay = Math.random() * 180;
+          const stops = 5 + Math.floor(Math.random() * 3); // 5–7
+          const stepDur = () => 70 + Math.floor(Math.random() * 40);
+
+          let cursor = startDelay;
+          for (let s = 0; s < stops; s++) {
+            // Bias: as s grows, pick from a window that shifts toward the hot end of the palette.
+            const progress = s / Math.max(1, stops - 1); // 0…1
+            const center = Math.round(progress * (heatPalette.length - 1));
+            const jitter = Math.floor((Math.random() - 0.5) * 4); // ±2
+            const pickIdx = Math.max(0, Math.min(heatPalette.length - 1, center + jitter));
+            const dur = stepDur();
+            const colorPick = heatPalette[pickIdx]!;
+            const t = window.setTimeout(() => {
+              col.animate({
+                key: 'fill',
+                to: colorPick,
+                duration: dur,
+                easing: am5.ease.inOut(am5.ease.quad),
+              });
+            }, cursor);
+            cellTimers.push(t);
+            cursor += dur;
+          }
+
+          // Settle on the true color.
+          const tSettle = window.setTimeout(() => {
+            col.animate({
+              key: 'fill',
+              to: target,
+              duration: 320,
+              easing: am5.ease.out(am5.ease.cubic),
+            });
+          }, cursor + 30);
+          cellTimers.push(tSettle);
+        });
+      });
+    });
+
     // Heat legend at bottom
     const heatLegend = chart.children.push(am5.HeatLegend.new(root, {
       orientation: 'horizontal',
@@ -446,10 +610,14 @@ function TimelineHeatmap({ timeline, loading }: { timeline: TimelineDim[]; loadi
     heatLegend.startLabel.setAll({ fontSize: 10, fill: am5.color('#706E6B'), fontFamily: 'Plus Jakarta Sans', fontWeight: '600' });
     heatLegend.endLabel.setAll({ fontSize: 10, fill: am5.color('#706E6B'), fontFamily: 'Plus Jakarta Sans', fontWeight: '600' });
 
-    series.appear(800);
-    chart.appear(800, 100);
+    series.appear(600, 0);
+    chart.appear(600, 0);
 
-    return () => { root.dispose(); };
+    return () => {
+      cancelAnimationFrame(rafId);
+      cellTimers.forEach(window.clearTimeout);
+      root.dispose();
+    };
   }, [timeline, loading]);
 
   if (loading) {

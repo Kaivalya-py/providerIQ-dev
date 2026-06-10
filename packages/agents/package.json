@@ -7,7 +7,9 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
-    "lint": "eslint src/"
+    "lint": "eslint src/",
+    "test:sentiment": "tsx scripts/test-sentiment.ts",
+    "test:pipeline": "tsx scripts/test-pipeline.ts"
   },
   "dependencies": {
     "@provideriq/shared": "workspace:*",
@@ -15,10 +17,12 @@
     "@provideriq/connectors": "workspace:*",
     "@provideriq/scoring": "workspace:*",
     "@google/genai": "^0.2.0",
-    "axios": "^1.7.0"
+    "axios": "^1.7.0",
+    "dotenv": "^16.4.5"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "tsx": "^4.19.0",
     "typescript": "^5.6.0"
   }
 }

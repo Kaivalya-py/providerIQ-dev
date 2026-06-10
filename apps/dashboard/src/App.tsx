@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
-import { Shield, Heart, TrendingUp, Search, Building2, MapPin, Database, Users, Bot, Cpu, Globe, CheckCircle2, RefreshCw, KeyRound, Wifi, ArrowUpRight, ArrowDownRight, Minus, Info, Sparkles, Lock, Activity, Layers } from 'lucide-react';
+import { Shield, Heart, TrendingUp, Search, Building2, MapPin, Database, Users, Bot, Cpu, Globe, CheckCircle2, RefreshCw, KeyRound, Wifi, ArrowUpRight, ArrowDownRight, Minus, Info, Sparkles, Lock, Activity, Layers, Play } from 'lucide-react';
 import LiveCrawlerPage from './LiveCrawlerPage';
 import RawJsonTab from './RawJsonTab';
 import AcquisitionPage from './AcquisitionPage';
 import HeatmapSection from './HeatmapSection';
+import AgentTerminal from './AgentTerminal';
 import './App.css';
 
 const API = import.meta.env.PROD ? '/api/trpc' : 'http://localhost:4000/trpc';
@@ -11,12 +12,12 @@ const API = import.meta.env.PROD ? '/api/trpc' : 'http://localhost:4000/trpc';
 
 
 const AGENTS = [
-  { name: 'Orchestrator Agent', icon: <Cpu size={16}/>, desc: 'Plans the research pipeline, dispatches sub-agents, merges results, and enforces scoring rules.', lastActivity: 'Consolidated Medanta scoring matrix & pushed clinical quality rating.', status: 'Idle (Listening)', lastRun: '2 mins ago' },
-  { name: 'Registry Agent', icon: <Database size={16}/>, desc: 'Pulls and validates structured data from ABDM, NABH, and CGHS registries.', lastActivity: 'Validated ABDM Hospital Facility Registry (HFR) credentials & beds registry.', status: 'Active (Monitoring)', lastRun: '12 mins ago' },
-  { name: 'Web Research Agent', icon: <Globe size={16}/>, desc: 'Crawls unstructured news sources, consumer court filings, and official portals.', lastActivity: 'Completed Tavily search for recent media disputes & local coverage reports.', status: 'Idle (Listening)', lastRun: '1 hr ago' },
-  { name: 'Sentiment Agent', icon: <Heart size={16}/>, desc: 'Applies NLP to patient reviews, Practo comments, and public feedback networks.', lastActivity: 'NLP parsed 142 recent Google Maps review sentiment vectors.', status: 'Active (Crawling)', lastRun: '15 mins ago' },
-  { name: 'Billing Analyst', icon: <TrendingUp size={16}/>, desc: 'Scans NHCX data feeds for cost variances, length-of-stay outliers, and package disputes.', lastActivity: 'Matched 145 claims lines against procedural averages (package variance: 4.2%).', status: 'Active (Monitoring)', lastRun: '5 mins ago' },
-  { name: 'Supervisor Agent', icon: <Shield size={16}/>, desc: 'Cross-checks findings across agents, validates fraud risk levels, and signs PII indices.', lastActivity: 'Certified Medanta compliance rating. Signed off fraud risk level as LOW.', status: 'Active (Validating)', lastRun: 'Just now' },
+  { name: 'Orchestrator Agent', icon: <Cpu size={16}/>, desc: 'Plans the research pipeline, dispatches sub-agents, merges their signals, and runs the scoring engine.', lastActivity: 'Coordinates Registry, Sentiment, Billing & Web Research agents in parallel, then runs the Supervisor and PII scoring.', status: 'Ready · On-demand', runtime: 'Pipeline coordinator' },
+  { name: 'Registry Agent', icon: <Database size={16}/>, desc: 'Validates structured facility data from ABDM, NABH, GIC and CGHS registries.', lastActivity: 'Deterministically derives TRUST & OPERATIONAL signals from accreditation, empanelment, bed capacity and staffing fields.', status: 'Ready · Deterministic', runtime: 'No LLM · DB fields' },
+  { name: 'Web Research Agent', icon: <Globe size={16}/>, desc: 'Assesses a facility\u2019s public footprint: litigation, regulatory actions, and credible news.', lastActivity: 'Reports only confidently-known public evidence; returns neutral TRUST & FRAUD signals when no evidence is found (anti-fabrication).', status: 'Ready · On-demand', runtime: 'LLM · gemini-3.5-flash' },
+  { name: 'Sentiment Agent', icon: <Heart size={16}/>, desc: 'Applies context-aware NLP to real patient reviews across PATIENT and CLINICAL dimensions.', lastActivity: 'Emits 8 review-derived signals: staff behaviour, wait time, facility, communication, treatment outcomes, safety, post-op and billing complaints.', status: 'Live · Runnable', runtime: 'LLM · gemini-3.5-flash', live: 'sentiment' as const },
+  { name: 'Billing Analyst', icon: <TrendingUp size={16}/>, desc: 'Isolates money-related patient accounts to surface billing transparency and fraud-risk signals.', lastActivity: 'Classifies billing grievances by substance and flags corroborated fraud patterns; emits BILLING & FRAUD signals.', status: 'Live · Runnable', runtime: 'LLM · gemini-3.5-flash', live: 'billing' as const },
+  { name: 'Supervisor Agent', icon: <Shield size={16}/>, desc: 'Cross-checks findings across agents, corroborates fraud across sources, and issues a verdict.', lastActivity: 'Counts independent fraud corroborations, detects contradictions, and signs the PII index verdict (VALIDATED \u2192 ESCALATED).', status: 'Ready · Deterministic', runtime: 'No LLM · audit logic' },
 ];
 
 const DATA_SOURCES = [
@@ -138,6 +139,7 @@ export default function App() {
   const [tab, setTab] = useState('provenance');
   const [q, setQ] = useState('');
   const [auditing, setAuditing] = useState(false);
+  const [terminalAgent, setTerminalAgent] = useState<'sentiment' | 'billing' | null>(null);
   const [animScore, setAnimScore] = useState<number | null>(null);
   const [deltas, setDeltas] = useState<any>({});
   const [vols, setVols] = useState<any>({});
@@ -320,16 +322,30 @@ export default function App() {
           <p>ProviderIQ utilizes a dynamic, multi-agent AI pipeline scanning, analyzing, and corroborating objective registries and subjective public sentiment indices.</p>
           <div className="agents-grid">
             {AGENTS.map(a => (
-              <div key={a.name} className="agent-box">
-                <div style={{color: '#706E6B', marginBottom: 12}}>{a.icon}</div>
+              <div key={a.name} className={`agent-box${a.live ? ' agent-box-live' : ''}`}>
+                <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start'}}>
+                  <div style={{color: a.live ? 'var(--accent)' : '#706E6B', marginBottom: 12}}>{a.icon}</div>
+                  {a.live && (
+                    <span className="agent-live-tag">
+                      <span className="agent-live-dot"/> LIVE
+                      <button
+                        className="agent-run-btn"
+                        onClick={() => setTerminalAgent(a.live!)}
+                        title="Run live analysis"
+                      >
+                        <Play size={12}/>
+                      </button>
+                    </span>
+                  )}
+                </div>
                 <h3 style={{fontWeight: 700, margin: '0 0 8px'}}>{a.name}</h3>
                 <p>{a.desc}</p>
                 <div style={{borderTop: '1px solid var(--border-light)', paddingTop: 10, marginTop: 10}}>
-                  <div style={{fontSize: '0.65rem', fontWeight: 700, color: 'var(--text-secondary)'}}>Last Activity:</div>
-                  <div style={{fontSize: '0.75rem', color: 'var(--text-primary)', marginTop: 4}}>{a.lastActivity}</div>
+                  <div style={{fontSize: '0.65rem', fontWeight: 700, color: 'var(--text-secondary)'}}>What it does on a run:</div>
+                  <div style={{fontSize: '0.75rem', color: 'var(--text-primary)', marginTop: 4, lineHeight: 1.5}}>{a.lastActivity}</div>
                   <div style={{display: 'flex', justifyContent: 'space-between', marginTop: 10, fontSize: '0.65rem', color: 'var(--text-tertiary)'}}>
                     <span>Status: <strong>{a.status}</strong></span>
-                    <span>Ran: {a.lastRun}</span>
+                    <span>{a.runtime}</span>
                   </div>
                 </div>
               </div>
@@ -754,6 +770,10 @@ export default function App() {
             )}
           </main>
         </div>
+      )}
+
+      {terminalAgent && (
+        <AgentTerminal agent={terminalAgent} onClose={() => setTerminalAgent(null)} />
       )}
     </div>
   );
